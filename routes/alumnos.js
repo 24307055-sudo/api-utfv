@@ -2,6 +2,10 @@ const express = require('express');
 const router = express.Router();
 const Alumno = require('../models/Alumno');
 
+// Credenciales de Administrador
+const ADMIN_USER = process.env.ADMIN_USER || 'admin';
+const ADMIN_PASS = process.env.ADMIN_PASS || 'utfv2026';
+
 // Catálogo de carreras y tiras de materias automáticas
 const CATALOGO_CARRERAS = {
   IRD: {
@@ -50,6 +54,77 @@ const CATALOGO_CARRERAS = {
   }
 };
 
+// Función auxiliar para consolidar el Kardex del alumno
+function actualizarKardexAlumno(alumno) {
+  const carga = alumno.cargas_academicas?.[0];
+  if (!carga) return;
+
+  const materiasKardex = carga.materias.map((m) => {
+    const finalVal = m.calificaciones?.final ?? null;
+    let estatusMat = 'PENDIENTE';
+    if (finalVal !== null && !isNaN(finalVal)) {
+      estatusMat = Number(finalVal) >= 7.0 ? 'ACREDITADA' : 'NO ACREDITADA';
+    }
+    return {
+      clave: m.clave,
+      nombre: m.nombre,
+      profesor: m.profesor,
+      parcial_1: m.calificaciones?.parcial_1 ?? null,
+      parcial_2: m.calificaciones?.parcial_2 ?? null,
+      parcial_3: m.calificaciones?.parcial_3 ?? null,
+      final: finalVal,
+      estatus_materia: estatusMat
+    };
+  });
+
+  const calificadas = materiasKardex.filter((m) => m.final !== null && !isNaN(m.final));
+  const promedio =
+    calificadas.length > 0
+      ? Number(
+          (
+            calificadas.reduce((acc, item) => acc + Number(item.final), 0) /
+            calificadas.length
+          ).toFixed(2)
+        )
+      : 0;
+
+  const registroKardex = {
+    periodo: alumno.academico?.periodo || carga.periodo,
+    cuatrimestre: alumno.academico?.cuatrimestre || carga.cuatrimestre,
+    carrera: alumno.academico?.carrera || '',
+    grupo: alumno.academico?.grupo || '',
+    promedio_cuatrimestre: promedio,
+    fecha_registro: new Date(),
+    materias: materiasKardex
+  };
+
+  if (!Array.isArray(alumno.kardex)) {
+    alumno.kardex = [];
+  }
+
+  const idx = alumno.kardex.findIndex(
+    (k) => k.cuatrimestre === registroKardex.cuatrimestre && k.periodo === registroKardex.periodo
+  );
+
+  if (idx >= 0) {
+    alumno.kardex[idx] = registroKardex;
+  } else {
+    alumno.kardex.push(registroKardex);
+  }
+}
+
+// 0. Inicio de sesión Administrador
+router.post('/login', (req, res) => {
+  const { usuario, password } = req.body;
+  if (usuario === ADMIN_USER && password === ADMIN_PASS) {
+    return res.json({
+      autenticado: true,
+      nombre: 'Administrador Control Escolar UTFV'
+    });
+  }
+  return res.status(401).json({ mensaje: 'Usuario o contraseña incorrectos' });
+});
+
 // 1. Obtener todos los registros
 router.get('/', async (req, res) => {
   try {
@@ -60,7 +135,7 @@ router.get('/', async (req, res) => {
   }
 });
 
-// 2. Consultar boleta por matrícula
+// 2. Consultar boleta / kardex por matrícula
 router.get('/boleta/:matricula', async (req, res) => {
   try {
     const alumno = await Alumno.findOne({ matricula: req.params.matricula });
@@ -136,13 +211,61 @@ router.put('/:id/inscribir', async (req, res) => {
       return res.status(404).json({ mensaje: 'Aspirante no encontrado' });
     }
 
+    actualizarKardexAlumno(alumnoInscrito);
+    await alumnoInscrito.save();
+
     res.json({ mensaje: 'Alumno inscrito con carga académica asignada', alumno: alumnoInscrito });
   } catch (error) {
     res.status(400).json({ mensaje: 'Error al procesar inscripción', error });
   }
 });
 
-// 5. Actualizar calificación parcial
+// 5A. Guardar TODAS las calificaciones de la boleta en una sola operación + actualizar Kardex
+router.put('/calificaciones-masivo', async (req, res) => {
+  try {
+    const { matricula, notas } = req.body;
+    const alumno = await Alumno.findOne({ matricula });
+    if (!alumno) {
+      return res.status(404).json({ mensaje: 'Alumno no encontrado' });
+    }
+
+    alumno.cargas_academicas.forEach((carga) => {
+      carga.materias.forEach((mat) => {
+        const nuevaNota = notas[mat.clave];
+        if (nuevaNota) {
+          mat.calificaciones.parcial_1 =
+            nuevaNota.parcial_1 === '' || nuevaNota.parcial_1 === null
+              ? null
+              : Number(nuevaNota.parcial_1);
+          mat.calificaciones.parcial_2 =
+            nuevaNota.parcial_2 === '' || nuevaNota.parcial_2 === null
+              ? null
+              : Number(nuevaNota.parcial_2);
+          mat.calificaciones.parcial_3 =
+            nuevaNota.parcial_3 === '' || nuevaNota.parcial_3 === null
+              ? null
+              : Number(nuevaNota.parcial_3);
+          mat.calificaciones.final =
+            nuevaNota.final === '' || nuevaNota.final === null
+              ? null
+              : Number(nuevaNota.final);
+        }
+      });
+    });
+
+    actualizarKardexAlumno(alumno);
+    await alumno.save();
+
+    res.json({
+      mensaje: 'Todas las calificaciones y el Kardex se guardaron correctamente',
+      alumno
+    });
+  } catch (error) {
+    res.status(400).json({ mensaje: 'Error al guardar calificaciones', error });
+  }
+});
+
+// 5B. Actualizar calificación parcial individual (compatibilidad)
 router.put('/calificaciones', async (req, res) => {
   try {
     const { matricula, claveMateria, numeroParcial, calificacion } = req.body;
@@ -167,10 +290,26 @@ router.put('/calificaciones', async (req, res) => {
       return res.status(404).json({ mensaje: 'Materia no encontrada' });
     }
 
+    actualizarKardexAlumno(alumno);
     await alumno.save();
     res.json({ mensaje: `Parcial ${numeroParcial} actualizado correctamente` });
   } catch (error) {
     res.status(400).json({ mensaje: 'Error al actualizar calificación', error });
+  }
+});
+
+// 5C. Guardar / Consolidar registro en Kardex manualmente
+router.post('/kardex/:matricula', async (req, res) => {
+  try {
+    const alumno = await Alumno.findOne({ matricula: req.params.matricula });
+    if (!alumno) {
+      return res.status(404).json({ mensaje: 'Alumno no encontrado' });
+    }
+    actualizarKardexAlumno(alumno);
+    await alumno.save();
+    res.json({ mensaje: 'Historial académico guardado en Kardex con éxito', alumno });
+  } catch (error) {
+    res.status(400).json({ mensaje: 'Error al guardar en Kardex', error });
   }
 });
 
