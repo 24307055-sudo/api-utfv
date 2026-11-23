@@ -20,6 +20,27 @@ const CargaAcademicaSchema = new mongoose.Schema({
   materias: [MateriaSchema]
 }, { _id: false });
 
+const KardexRegistroSchema = new mongoose.Schema({
+  periodo: { type: String, required: true },
+  cuatrimestre: { type: String, required: true },
+  carrera: { type: String },
+  grupo: { type: String },
+  promedio_cuatrimestre: { type: Number, default: 0 },
+  fecha_registro: { type: Date, default: Date.now },
+  materias: [
+    {
+      clave: String,
+      nombre: String,
+      profesor: String,
+      parcial_1: Number,
+      parcial_2: Number,
+      parcial_3: Number,
+      final: Number,
+      estatus_materia: String
+    }
+  ]
+}, { _id: false });
+
 const AlumnoSchema = new mongoose.Schema({
   estatus: { type: String, enum: ['ASPIRANTE', 'ALUMNO_ACTIVO'], default: 'ASPIRANTE' },
   matricula: { type: String, unique: true, sparse: true },
@@ -37,7 +58,8 @@ const AlumnoSchema = new mongoose.Schema({
     colonia: String,
     no: Number,
     c_p: Number,
-    municipio: String
+    municipio: String,
+    estado: { type: String, default: 'Estado de México' }
   },
   academico: {
     carrera: String,
@@ -46,7 +68,8 @@ const AlumnoSchema = new mongoose.Schema({
     periodo: String,
     tutor_grupo: String
   },
-  cargas_academicas: [CargaAcademicaSchema]
+  cargas_academicas: [CargaAcademicaSchema],
+  kardex: [KardexRegistroSchema]
 }, { timestamps: true, collection: 'aspirantes' });
 
 module.exports = mongoose.model('Alumno', AlumnoSchema, 'aspirantes');
