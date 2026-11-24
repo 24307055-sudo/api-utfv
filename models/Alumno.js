@@ -4,6 +4,7 @@ const CalificacionSchema = new mongoose.Schema({
   parcial_1: { type: Number, default: null },
   parcial_2: { type: Number, default: null },
   parcial_3: { type: Number, default: null },
+  calificacion_ego: { type: Number, default: null },
   final: { type: Number, default: null },
   ego: { type: Boolean, default: false }
 }, { _id: false });
@@ -36,6 +37,7 @@ const KardexRegistroSchema = new mongoose.Schema({
       parcial_1: Number,
       parcial_2: Number,
       parcial_3: Number,
+      calificacion_ego: Number,
       final: Number,
       ego: { type: Boolean, default: false },
       estatus_materia: String
