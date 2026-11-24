@@ -6,11 +6,12 @@ const Alumno = require('../models/Alumno');
 const ADMIN_USER = process.env.ADMIN_USER || 'admin';
 const ADMIN_PASS = process.env.ADMIN_PASS || 'utfv2026';
 
-// Catálogo de carreras y tiras de materias automáticas
+// Catálogo de carreras, tutores y tiras de materias automáticas
 const CATALOGO_CARRERAS = {
   IRD: {
     nombre_completo: 'T.S.U. en Infraestructura de Redes Digitales',
     cuatrimestre: '4°',
+    tutor_grupo: 'M. en D. Arturo Hernández Jiménez',
     periodo_texto: '03 DE SEPTIEMBRE AL 18 DE DICIEMBRE',
     periodo_clave: '2026-3',
     materias: [
@@ -26,6 +27,7 @@ const CATALOGO_CARRERAS = {
   LITIID: {
     nombre_completo: 'Licenciatura en Ingeniería en Tecnologías de la Información e Innovación Digital',
     cuatrimestre: '7°',
+    tutor_grupo: 'Mtra. Claudia Elena Ríos Mendoza',
     periodo_texto: '03 DE SEPTIEMBRE AL 18 DE DICIEMBRE',
     periodo_clave: '2026-3',
     materias: [
@@ -41,6 +43,7 @@ const CATALOGO_CARRERAS = {
   IRIC: {
     nombre_completo: 'Ingeniería en Redes Inteligentes y Ciberseguridad',
     cuatrimestre: '10°',
+    tutor_grupo: 'Ing. Roberto Carlos Domínguez Navarro',
     periodo_texto: '03 DE SEPTIEMBRE AL 18 DE DICIEMBRE',
     periodo_clave: '2026-3',
     materias: [
@@ -54,17 +57,24 @@ const CATALOGO_CARRERAS = {
   }
 };
 
-// Función auxiliar para consolidar el Kardex del alumno
+// Función auxiliar para consolidar el Kardex del alumno con estatus de EGO
 function actualizarKardexAlumno(alumno) {
   const carga = alumno.cargas_academicas?.[0];
   if (!carga) return;
 
   const materiasKardex = carga.materias.map((m) => {
     const finalVal = m.calificaciones?.final ?? null;
+    const tieneNotaFinal = finalVal !== null && !isNaN(finalVal);
+    const fueAEgo =
+      Boolean(m.calificaciones?.ego) || (tieneNotaFinal && Number(finalVal) < 7.0);
+
     let estatusMat = 'PENDIENTE';
-    if (finalVal !== null && !isNaN(finalVal)) {
-      estatusMat = Number(finalVal) >= 7.0 ? 'ACREDITADA' : 'NO ACREDITADA';
+    if (tieneNotaFinal) {
+      estatusMat = fueAEgo || Number(finalVal) < 7.0 ? 'SE FUE A EGO' : 'ACREDITADA';
+    } else if (fueAEgo) {
+      estatusMat = 'SE FUE A EGO';
     }
+
     return {
       clave: m.clave,
       nombre: m.nombre,
@@ -73,6 +83,7 @@ function actualizarKardexAlumno(alumno) {
       parcial_2: m.calificaciones?.parcial_2 ?? null,
       parcial_3: m.calificaciones?.parcial_3 ?? null,
       final: finalVal,
+      ego: fueAEgo,
       estatus_materia: estatusMat
     };
   });
@@ -162,7 +173,7 @@ router.post('/aspirantes', async (req, res) => {
   }
 });
 
-// 4. Inscribir aspirante y asignar automáticamente su tira de materias por carrera
+// 4. Inscribir aspirante y asignar automáticamente su tira de materias y tutor
 router.put('/:id/inscribir', async (req, res) => {
   try {
     const { matricula, claveCarrera, grupo, tutor_grupo } = req.body;
@@ -180,7 +191,8 @@ router.put('/:id/inscribir', async (req, res) => {
         parcial_1: null,
         parcial_2: null,
         parcial_3: null,
-        final: null
+        final: null,
+        ego: false
       }
     }));
 
@@ -194,7 +206,7 @@ router.put('/:id/inscribir', async (req, res) => {
           grupo,
           cuatrimestre: plan.cuatrimestre,
           periodo: plan.periodo_texto,
-          tutor_grupo
+          tutor_grupo: tutor_grupo || plan.tutor_grupo
         },
         cargas_academicas: [
           {
@@ -220,7 +232,7 @@ router.put('/:id/inscribir', async (req, res) => {
   }
 });
 
-// 5A. Guardar TODAS las calificaciones de la boleta en una sola operación + actualizar Kardex
+// 5A. Guardar TODAS las calificaciones de un alumno (Boleta individual) + EGO + Kardex
 router.put('/calificaciones-masivo', async (req, res) => {
   try {
     const { matricula, notas } = req.body;
@@ -233,6 +245,11 @@ router.put('/calificaciones-masivo', async (req, res) => {
       carga.materias.forEach((mat) => {
         const nuevaNota = notas[mat.clave];
         if (nuevaNota) {
+          const finalNum =
+            nuevaNota.final === '' || nuevaNota.final === null
+              ? null
+              : Number(nuevaNota.final);
+
           mat.calificaciones.parcial_1 =
             nuevaNota.parcial_1 === '' || nuevaNota.parcial_1 === null
               ? null
@@ -245,10 +262,9 @@ router.put('/calificaciones-masivo', async (req, res) => {
             nuevaNota.parcial_3 === '' || nuevaNota.parcial_3 === null
               ? null
               : Number(nuevaNota.parcial_3);
-          mat.calificaciones.final =
-            nuevaNota.final === '' || nuevaNota.final === null
-              ? null
-              : Number(nuevaNota.final);
+          mat.calificaciones.final = finalNum;
+          mat.calificaciones.ego =
+            Boolean(nuevaNota.ego) || (finalNum !== null && finalNum < 7.0);
         }
       });
     });
@@ -265,7 +281,71 @@ router.put('/calificaciones-masivo', async (req, res) => {
   }
 });
 
-// 5B. Actualizar calificación parcial individual (compatibilidad)
+// 5B. Guardar calificaciones de forma GRUPAL para toda una materia
+router.put('/calificaciones-grupo', async (req, res) => {
+  try {
+    const { grupo, claveMateria, registros } = req.body;
+    if (!grupo || !claveMateria || !registros) {
+      return res.status(400).json({ mensaje: 'Faltan datos del grupo o materia' });
+    }
+
+    const alumnosGrupo = await Alumno.find({
+      estatus: 'ALUMNO_ACTIVO',
+      'academico.grupo': grupo
+    });
+
+    let actualizados = 0;
+
+    for (const alumno of alumnosGrupo) {
+      const notaAlumno = registros[alumno.matricula];
+      if (!notaAlumno) continue;
+
+      let modificado = false;
+      alumno.cargas_academicas.forEach((carga) => {
+        carga.materias.forEach((mat) => {
+          if (mat.clave === claveMateria) {
+            const finalNum =
+              notaAlumno.final === '' || notaAlumno.final === null
+                ? null
+                : Number(notaAlumno.final);
+
+            mat.calificaciones.parcial_1 =
+              notaAlumno.parcial_1 === '' || notaAlumno.parcial_1 === null
+                ? null
+                : Number(notaAlumno.parcial_1);
+            mat.calificaciones.parcial_2 =
+              notaAlumno.parcial_2 === '' || notaAlumno.parcial_2 === null
+                ? null
+                : Number(notaAlumno.parcial_2);
+            mat.calificaciones.parcial_3 =
+              notaAlumno.parcial_3 === '' || notaAlumno.parcial_3 === null
+                ? null
+                : Number(notaAlumno.parcial_3);
+            mat.calificaciones.final = finalNum;
+            mat.calificaciones.ego =
+              Boolean(notaAlumno.ego) || (finalNum !== null && finalNum < 7.0);
+            modificado = true;
+          }
+        });
+      });
+
+      if (modificado) {
+        actualizarKardexAlumno(alumno);
+        await alumno.save();
+        actualizados++;
+      }
+    }
+
+    res.json({
+      mensaje: `Calificaciones grupales guardadas para ${actualizados} alumno(s) del grupo ${grupo}`,
+      actualizados
+    });
+  } catch (error) {
+    res.status(400).json({ mensaje: 'Error al guardar calificaciones del grupo', error });
+  }
+});
+
+// 5C. Actualizar calificación parcial individual (compatibilidad)
 router.put('/calificaciones', async (req, res) => {
   try {
     const { matricula, claveMateria, numeroParcial, calificacion } = req.body;
@@ -281,6 +361,9 @@ router.put('/calificaciones', async (req, res) => {
       carga.materias.forEach((mat) => {
         if (mat.clave === claveMateria) {
           mat.calificaciones[campoParcial] = calificacion;
+          if (campoParcial === 'final' && calificacion !== null) {
+            mat.calificaciones.ego = Number(calificacion) < 7.0;
+          }
           encontrada = true;
         }
       });
@@ -298,7 +381,7 @@ router.put('/calificaciones', async (req, res) => {
   }
 });
 
-// 5C. Guardar / Consolidar registro en Kardex manualmente
+// 5D. Guardar / Consolidar registro en Kardex manualmente
 router.post('/kardex/:matricula', async (req, res) => {
   try {
     const alumno = await Alumno.findOne({ matricula: req.params.matricula });
