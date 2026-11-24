@@ -2,11 +2,9 @@ const express = require('express');
 const router = express.Router();
 const Alumno = require('../models/Alumno');
 
-// Credenciales de Administrador
 const ADMIN_USER = process.env.ADMIN_USER || 'admin';
 const ADMIN_PASS = process.env.ADMIN_PASS || 'utfv2026';
 
-// Catálogo de carreras, tutores y tiras de materias automáticas
 const CATALOGO_CARRERAS = {
   IRD: {
     nombre_completo: 'T.S.U. en Infraestructura de Redes Digitales',
@@ -57,31 +55,44 @@ const CATALOGO_CARRERAS = {
   }
 };
 
-// Función auxiliar para consolidar el Kardex del alumno con estatus de EGO
+function parseNum(val) {
+  return val === '' || val === null || val === undefined || isNaN(Number(val))
+    ? null
+    : Number(val);
+}
+
 function actualizarKardexAlumno(alumno) {
   const carga = alumno.cargas_academicas?.[0];
   if (!carga) return;
 
   const materiasKardex = carga.materias.map((m) => {
+    const p1 = m.calificaciones?.parcial_1 ?? null;
+    const p2 = m.calificaciones?.parcial_2 ?? null;
+    const p3 = m.calificaciones?.parcial_3 ?? null;
+    const calEgo = m.calificaciones?.calificacion_ego ?? null;
     const finalVal = m.calificaciones?.final ?? null;
-    const tieneNotaFinal = finalVal !== null && !isNaN(finalVal);
     const fueAEgo =
-      Boolean(m.calificaciones?.ego) || (tieneNotaFinal && Number(finalVal) < 7.0);
+      Boolean(m.calificaciones?.ego) || calEgo !== null || (finalVal !== null && finalVal < 7.0);
 
     let estatusMat = 'PENDIENTE';
-    if (tieneNotaFinal) {
-      estatusMat = fueAEgo || Number(finalVal) < 7.0 ? 'SE FUE A EGO' : 'ACREDITADA';
+    if (finalVal !== null) {
+      if (Number(finalVal) >= 7.0) {
+        estatusMat = fueAEgo ? 'ACREDITADA (EGO)' : 'ACREDITADA';
+      } else {
+        estatusMat = 'EN EGO / NO ACREDITADA';
+      }
     } else if (fueAEgo) {
-      estatusMat = 'SE FUE A EGO';
+      estatusMat = 'PENDIENTE EGO';
     }
 
     return {
       clave: m.clave,
       nombre: m.nombre,
       profesor: m.profesor,
-      parcial_1: m.calificaciones?.parcial_1 ?? null,
-      parcial_2: m.calificaciones?.parcial_2 ?? null,
-      parcial_3: m.calificaciones?.parcial_3 ?? null,
+      parcial_1: p1,
+      parcial_2: p2,
+      parcial_3: p3,
+      calificacion_ego: calEgo,
       final: finalVal,
       ego: fueAEgo,
       estatus_materia: estatusMat
@@ -173,7 +184,7 @@ router.post('/aspirantes', async (req, res) => {
   }
 });
 
-// 4. Inscribir aspirante y asignar automáticamente su tira de materias y tutor
+// 4. Inscribir aspirante y asignar carga académica y tutor
 router.put('/:id/inscribir', async (req, res) => {
   try {
     const { matricula, claveCarrera, grupo, tutor_grupo } = req.body;
@@ -191,6 +202,7 @@ router.put('/:id/inscribir', async (req, res) => {
         parcial_1: null,
         parcial_2: null,
         parcial_3: null,
+        calificacion_ego: null,
         final: null,
         ego: false
       }
@@ -232,7 +244,7 @@ router.put('/:id/inscribir', async (req, res) => {
   }
 });
 
-// 5A. Guardar TODAS las calificaciones de un alumno (Boleta individual) + EGO + Kardex
+// 5A. Guardar TODAS las calificaciones de un alumno (Boleta individual) + Calif. EGO + Kardex
 router.put('/calificaciones-masivo', async (req, res) => {
   try {
     const { matricula, notas } = req.body;
@@ -245,26 +257,19 @@ router.put('/calificaciones-masivo', async (req, res) => {
       carga.materias.forEach((mat) => {
         const nuevaNota = notas[mat.clave];
         if (nuevaNota) {
-          const finalNum =
-            nuevaNota.final === '' || nuevaNota.final === null
-              ? null
-              : Number(nuevaNota.final);
+          const p1 = parseNum(nuevaNota.parcial_1);
+          const p2 = parseNum(nuevaNota.parcial_2);
+          const p3 = parseNum(nuevaNota.parcial_3);
+          const calEgo = parseNum(nuevaNota.calificacion_ego);
+          const finalNum = parseNum(nuevaNota.final);
 
-          mat.calificaciones.parcial_1 =
-            nuevaNota.parcial_1 === '' || nuevaNota.parcial_1 === null
-              ? null
-              : Number(nuevaNota.parcial_1);
-          mat.calificaciones.parcial_2 =
-            nuevaNota.parcial_2 === '' || nuevaNota.parcial_2 === null
-              ? null
-              : Number(nuevaNota.parcial_2);
-          mat.calificaciones.parcial_3 =
-            nuevaNota.parcial_3 === '' || nuevaNota.parcial_3 === null
-              ? null
-              : Number(nuevaNota.parcial_3);
+          mat.calificaciones.parcial_1 = p1;
+          mat.calificaciones.parcial_2 = p2;
+          mat.calificaciones.parcial_3 = p3;
+          mat.calificaciones.calificacion_ego = calEgo;
           mat.calificaciones.final = finalNum;
           mat.calificaciones.ego =
-            Boolean(nuevaNota.ego) || (finalNum !== null && finalNum < 7.0);
+            Boolean(nuevaNota.ego) || calEgo !== null || (finalNum !== null && finalNum < 7.0);
         }
       });
     });
@@ -273,7 +278,7 @@ router.put('/calificaciones-masivo', async (req, res) => {
     await alumno.save();
 
     res.json({
-      mensaje: 'Todas las calificaciones y el Kardex se guardaron correctamente',
+      mensaje: 'Calificaciones y Kardex guardados correctamente',
       alumno
     });
   } catch (error) {
@@ -304,26 +309,19 @@ router.put('/calificaciones-grupo', async (req, res) => {
       alumno.cargas_academicas.forEach((carga) => {
         carga.materias.forEach((mat) => {
           if (mat.clave === claveMateria) {
-            const finalNum =
-              notaAlumno.final === '' || notaAlumno.final === null
-                ? null
-                : Number(notaAlumno.final);
+            const p1 = parseNum(notaAlumno.parcial_1);
+            const p2 = parseNum(notaAlumno.parcial_2);
+            const p3 = parseNum(notaAlumno.parcial_3);
+            const calEgo = parseNum(notaAlumno.calificacion_ego);
+            const finalNum = parseNum(notaAlumno.final);
 
-            mat.calificaciones.parcial_1 =
-              notaAlumno.parcial_1 === '' || notaAlumno.parcial_1 === null
-                ? null
-                : Number(notaAlumno.parcial_1);
-            mat.calificaciones.parcial_2 =
-              notaAlumno.parcial_2 === '' || notaAlumno.parcial_2 === null
-                ? null
-                : Number(notaAlumno.parcial_2);
-            mat.calificaciones.parcial_3 =
-              notaAlumno.parcial_3 === '' || notaAlumno.parcial_3 === null
-                ? null
-                : Number(notaAlumno.parcial_3);
+            mat.calificaciones.parcial_1 = p1;
+            mat.calificaciones.parcial_2 = p2;
+            mat.calificaciones.parcial_3 = p3;
+            mat.calificaciones.calificacion_ego = calEgo;
             mat.calificaciones.final = finalNum;
             mat.calificaciones.ego =
-              Boolean(notaAlumno.ego) || (finalNum !== null && finalNum < 7.0);
+              Boolean(notaAlumno.ego) || calEgo !== null || (finalNum !== null && finalNum < 7.0);
             modificado = true;
           }
         });
@@ -345,43 +343,7 @@ router.put('/calificaciones-grupo', async (req, res) => {
   }
 });
 
-// 5C. Actualizar calificación parcial individual (compatibilidad)
-router.put('/calificaciones', async (req, res) => {
-  try {
-    const { matricula, claveMateria, numeroParcial, calificacion } = req.body;
-    const alumno = await Alumno.findOne({ matricula });
-    if (!alumno) {
-      return res.status(404).json({ mensaje: 'Alumno no encontrado' });
-    }
-
-    const campoParcial = numeroParcial === 'final' ? 'final' : `parcial_${numeroParcial}`;
-    let encontrada = false;
-
-    alumno.cargas_academicas.forEach((carga) => {
-      carga.materias.forEach((mat) => {
-        if (mat.clave === claveMateria) {
-          mat.calificaciones[campoParcial] = calificacion;
-          if (campoParcial === 'final' && calificacion !== null) {
-            mat.calificaciones.ego = Number(calificacion) < 7.0;
-          }
-          encontrada = true;
-        }
-      });
-    });
-
-    if (!encontrada) {
-      return res.status(404).json({ mensaje: 'Materia no encontrada' });
-    }
-
-    actualizarKardexAlumno(alumno);
-    await alumno.save();
-    res.json({ mensaje: `Parcial ${numeroParcial} actualizado correctamente` });
-  } catch (error) {
-    res.status(400).json({ mensaje: 'Error al actualizar calificación', error });
-  }
-});
-
-// 5D. Guardar / Consolidar registro en Kardex manualmente
+// 5C. Guardar / Consolidar registro en Kardex manualmente
 router.post('/kardex/:matricula', async (req, res) => {
   try {
     const alumno = await Alumno.findOne({ matricula: req.params.matricula });
@@ -390,7 +352,7 @@ router.post('/kardex/:matricula', async (req, res) => {
     }
     actualizarKardexAlumno(alumno);
     await alumno.save();
-    res.json({ mensaje: 'Historial académico guardado en Kardex con éxito', alumno });
+    res.json({ mensaje: 'Historial académico actualizado en el Kardex', alumno });
   } catch (error) {
     res.status(400).json({ mensaje: 'Error al guardar en Kardex', error });
   }
